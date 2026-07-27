@@ -17,26 +17,137 @@ vi.mock('child_process', () => ({
   execSync: (...args: unknown[]) => mockExecSync(...args),
 }));
 
+// Mock os so the Linux-only gateway branches are testable off Linux.
+const mockPlatform = vi.fn(() => 'linux');
+vi.mock('os', () => ({
+  default: { platform: () => mockPlatform() },
+  platform: () => mockPlatform(),
+}));
+
 import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
+  readwriteMountArgs,
   stopContainer,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
+  isRootlessPodman,
+  resetRuntimeProbe,
+  userNamespaceArgs,
+  hostGatewayArgs,
 } from './container-runtime.js';
-import { CONTAINER_INSTALL_LABEL } from './config.js';
+import { CONTAINER_INSTALL_LABEL, ONECLI_URL } from './config.js';
 import { log } from './log.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetRuntimeProbe();
+  mockPlatform.mockReturnValue('linux');
 });
+
+/**
+ * Make the runtime probe report Docker (no such info field) or rootless Podman.
+ * Anything else the code shells out to (getenforce) is reported absent.
+ */
+function probeReports(runtime: 'docker' | 'rootless-podman'): void {
+  mockExecSync.mockImplementation((cmd: unknown) => {
+    const c = String(cmd);
+    if (c.includes('Host.Security.Rootless')) {
+      return runtime === 'rootless-podman' ? 'true\n' : '';
+    }
+    // SELinux absent on the test host; every other command succeeds silently
+    // so this helper doesn't perturb tests that assert on unrelated calls.
+    if (c.includes('getenforce')) throw new Error('command not found');
+    return '';
+  });
+}
 
 // --- Pure functions ---
 
 describe('readonlyMountArgs', () => {
   it('returns -v flag with :ro suffix', () => {
+    probeReports('docker');
     const args = readonlyMountArgs('/host/path', '/container/path');
     expect(args).toEqual(['-v', '/host/path:/container/path:ro']);
+  });
+
+  it('omits the SELinux :z label when SELinux is not enabled', () => {
+    probeReports('rootless-podman');
+    expect(readonlyMountArgs('/h', '/c')).toEqual(['-v', '/h:/c:ro']);
+  });
+});
+
+describe('readwriteMountArgs', () => {
+  it('returns a plain -v flag on Docker, matching prior behavior', () => {
+    probeReports('docker');
+    expect(readwriteMountArgs('/h', '/c')).toEqual(['-v', '/h:/c']);
+  });
+});
+
+// --- Rootless Podman detection ---
+
+describe('isRootlessPodman', () => {
+  it('is true when the runtime reports Host.Security.Rootless=true', () => {
+    probeReports('rootless-podman');
+    expect(isRootlessPodman()).toBe(true);
+  });
+
+  it('is false for Docker, whose info has no such field', () => {
+    probeReports('docker');
+    expect(isRootlessPodman()).toBe(false);
+  });
+
+  it('is false when the runtime cannot be probed at all', () => {
+    mockExecSync.mockImplementation(() => {
+      throw new Error('no runtime');
+    });
+    expect(isRootlessPodman()).toBe(false);
+  });
+
+  it('memoizes the probe so we do not spawn a process per container', () => {
+    probeReports('rootless-podman');
+    isRootlessPodman();
+    isRootlessPodman();
+    isRootlessPodman();
+    const probes = mockExecSync.mock.calls.filter((c) => String(c[0]).includes('Host.Security.Rootless'));
+    expect(probes).toHaveLength(1);
+  });
+});
+
+describe('userNamespaceArgs', () => {
+  it('adds --userns=keep-id under rootless Podman so bind mounts stay writable', () => {
+    probeReports('rootless-podman');
+    expect(userNamespaceArgs()).toEqual(['--userns=keep-id']);
+  });
+
+  it('is a no-op on Docker', () => {
+    probeReports('docker');
+    expect(userNamespaceArgs()).toEqual([]);
+  });
+});
+
+describe('hostGatewayArgs', () => {
+  it('uses host-gateway on Docker/Linux', () => {
+    probeReports('docker');
+    expect(hostGatewayArgs()).toEqual(['--add-host=host.docker.internal:host-gateway']);
+  });
+
+  it('adds nothing off Linux', () => {
+    mockPlatform.mockReturnValue('darwin');
+    probeReports('docker');
+    expect(hostGatewayArgs()).toEqual([]);
+  });
+
+  it('forwards the OneCLI loopback port through pasta under rootless Podman', () => {
+    probeReports('rootless-podman');
+    const args = hostGatewayArgs();
+    // Only meaningful when a loopback ONECLI_URL is configured in this env.
+    if (ONECLI_URL && /^(https?:\/\/)?(localhost|127\.0\.0\.1|\[::1\])/.test(ONECLI_URL)) {
+      expect(args[0]).toMatch(/^--network=pasta:-T,\d+$/);
+      expect(args[1]).toBe('--add-host=host.docker.internal:127.0.0.1');
+    } else {
+      expect(args).toEqual([]);
+    }
   });
 });
 
