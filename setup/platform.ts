@@ -115,6 +115,41 @@ export function commandExists(name: string): boolean {
   }
 }
 
+/** A container runtime binary NanoClaw knows how to drive. */
+export type ContainerRuntime = 'docker' | 'podman';
+
+/**
+ * Which container runtime should setup use?
+ *
+ * Honors CONTAINER_RUNTIME_BIN (the same variable src/container-runtime.ts
+ * reads at run time) so setup and the host agree. Otherwise prefers Docker for
+ * backwards compatibility and falls back to Podman when only Podman is present
+ * — a bare `podman`-only host installs without extra flags.
+ */
+export function detectContainerRuntime(): ContainerRuntime {
+  const explicit = process.env.CONTAINER_RUNTIME_BIN?.trim();
+  if (explicit === 'docker' || explicit === 'podman') return explicit;
+  if (commandExists('docker')) return 'docker';
+  if (commandExists('podman')) return 'podman';
+  return 'docker';
+}
+
+/** Is this runtime Podman running rootless? Mirrors src/container-runtime.ts. */
+export function isRootlessPodmanRuntime(runtime: ContainerRuntime): boolean {
+  if (runtime !== 'podman') return false;
+  try {
+    return (
+      execSync(`${runtime} info --format '{{.Host.Security.Rootless}}'`, {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 10000,
+      }).trim() === 'true'
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function getNodeVersion(): string | null {
   try {
     const version = execSync('node --version', { encoding: 'utf-8' }).trim();
