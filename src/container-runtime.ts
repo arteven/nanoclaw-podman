@@ -5,15 +5,19 @@
 import { execSync } from 'child_process';
 import os from 'os';
 
-import { CONTAINER_INSTALL_LABEL, ONECLI_URL } from './config.js';
+import { CONTAINER_INSTALL_LABEL, CONTAINER_RUNTIME_BIN_CONFIG, ONECLI_URL } from './config.js';
 import { log } from './log.js';
 
 /**
  * The container runtime binary name. Podman ships a Docker-compatible CLI, so
  * pointing this at `podman` is enough for the *invocation* to work — the
  * behavioral differences are handled by the rootless helpers below.
+ *
+ * Sourced from config so it honors .env under the shipped service, not just
+ * process.env, and is restricted to known runtimes — this value is interpolated
+ * into execSync command strings.
  */
-export const CONTAINER_RUNTIME_BIN = process.env.CONTAINER_RUNTIME_BIN || 'docker';
+export const CONTAINER_RUNTIME_BIN = CONTAINER_RUNTIME_BIN_CONFIG;
 
 /** Cached runtime probe — `<bin> info` is a process spawn, and we spawn per container. */
 let cachedRootlessPodman: boolean | null = null;
