@@ -5,6 +5,8 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
+import { readEnvFile } from '../src/env.js';
+
 export type Platform = 'macos' | 'linux' | 'unknown';
 export type ServiceManager = 'launchd' | 'systemd' | 'none';
 
@@ -110,6 +112,45 @@ export function commandExists(name: string): boolean {
   try {
     execSync(`command -v ${name}`, { stdio: 'ignore' });
     return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A container runtime binary NanoClaw knows how to drive. */
+export type ContainerRuntime = 'docker' | 'podman';
+
+/**
+ * Which container runtime should setup use?
+ *
+ * Honors CONTAINER_RUNTIME_BIN (the same variable src/container-runtime.ts
+ * reads at run time) so setup and the host agree. Otherwise prefers Docker for
+ * backwards compatibility and falls back to Podman when only Podman is present
+ * — a bare `podman`-only host installs without extra flags.
+ */
+export function detectContainerRuntime(): ContainerRuntime {
+  // process.env first, then .env — setup steps don't otherwise load .env, and
+  // an operator who put the variable there expects it to apply to the install.
+  const explicit = (
+    process.env.CONTAINER_RUNTIME_BIN ?? readEnvFile(['CONTAINER_RUNTIME_BIN']).CONTAINER_RUNTIME_BIN
+  )?.trim();
+  if (explicit === 'docker' || explicit === 'podman') return explicit;
+  if (commandExists('docker')) return 'docker';
+  if (commandExists('podman')) return 'podman';
+  return 'docker';
+}
+
+/** Is this runtime Podman running rootless? Mirrors src/container-runtime.ts. */
+export function isRootlessPodmanRuntime(runtime: ContainerRuntime): boolean {
+  if (runtime !== 'podman') return false;
+  try {
+    return (
+      execSync(`${runtime} info --format '{{.Host.Security.Rootless}}'`, {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 10000,
+      }).trim() === 'true'
+    );
   } catch {
     return false;
   }

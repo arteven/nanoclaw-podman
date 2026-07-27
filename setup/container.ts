@@ -8,22 +8,24 @@ import { setTimeout as sleep } from 'timers/promises';
 
 import { log } from '../src/log.js';
 import { getDefaultContainerImage } from '../src/install-slug.js';
-import { commandExists, getPlatform } from './platform.js';
+import {
+  commandExists,
+  detectContainerRuntime,
+  getPlatform,
+  isRootlessPodmanRuntime,
+  type ContainerRuntime,
+} from './platform.js';
 import { emitStatus } from './status.js';
 
 type DockerStatus = 'ok' | 'no-permission' | 'no-daemon' | 'other';
 
-function dockerStatus(): DockerStatus {
-  const res = spawnSync('docker', ['info'], { encoding: 'utf-8' });
+function runtimeStatus(bin: ContainerRuntime): DockerStatus {
+  const res = spawnSync(bin, ['info'], { encoding: 'utf-8' });
   if (res.status === 0) return 'ok';
   const err = `${res.stderr ?? ''}\n${res.stdout ?? ''}`;
   if (/permission denied/i.test(err)) return 'no-permission';
   if (/cannot connect|is the docker daemon running|no such file/i.test(err)) return 'no-daemon';
   return 'other';
-}
-
-function dockerRunning(): boolean {
-  return dockerStatus() === 'ok';
 }
 
 /**
@@ -52,7 +54,7 @@ async function tryStartDocker(): Promise<DockerStatus> {
 
   for (let i = 0; i < 30; i++) {
     await sleep(2000);
-    const s = dockerStatus();
+    const s = runtimeStatus('docker');
     if (s === 'ok') {
       log.info('Docker is up');
       return 'ok';
@@ -67,25 +69,24 @@ async function tryStartDocker(): Promise<DockerStatus> {
 }
 
 function parseArgs(args: string[]): { runtime: string } {
-  // `--runtime` is still accepted for backwards compatibility with the /setup
-  // skill, but `docker` is the only supported value.
-  let runtime = 'docker';
+  // `--runtime` selects the container runtime. When omitted we auto-detect,
+  // honoring CONTAINER_RUNTIME_BIN so setup matches what the host will use.
+  let runtime: string | null = null;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--runtime' && args[i + 1]) {
       runtime = args[i + 1];
       i++;
     }
   }
-  return { runtime };
+  return { runtime: runtime ?? detectContainerRuntime() };
 }
 
 export async function run(args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const { runtime } = parseArgs(args);
   const image = getDefaultContainerImage(projectRoot);
-  const logFile = path.join(projectRoot, 'logs', 'setup.log');
 
-  if (runtime !== 'docker') {
+  if (runtime !== 'docker' && runtime !== 'podman') {
     emitStatus('SETUP_CONTAINER', {
       RUNTIME: runtime,
       IMAGE: image,
@@ -97,8 +98,12 @@ export async function run(args: string[]): Promise<void> {
     });
     process.exit(4);
   }
+  const bin: ContainerRuntime = runtime;
 
-  if (!commandExists('docker')) {
+  // Only Docker has an installer script here. Podman is expected to be present
+  // already — it's typically distro-packaged, and installing a rootless runtime
+  // for the user is not something setup should do behind their back.
+  if (bin === 'docker' && !commandExists('docker')) {
     log.info('Docker not found — running setup/install-docker.sh');
     try {
       execSync('bash setup/install-docker.sh', { cwd: projectRoot, stdio: 'inherit' });
@@ -107,7 +112,8 @@ export async function run(args: string[]): Promise<void> {
     }
   }
 
-  if (!commandExists('docker')) {
+  if (!commandExists(bin)) {
+    log.error(`${bin} not found on PATH`);
     emitStatus('SETUP_CONTAINER', {
       RUNTIME: runtime,
       IMAGE: image,
@@ -120,9 +126,15 @@ export async function run(args: string[]): Promise<void> {
     process.exit(2);
   }
 
+  const rootlessPodman = isRootlessPodmanRuntime(bin);
+  if (rootlessPodman) log.info('Rootless Podman detected — skipping daemon and group setup');
+
   {
-    let status = dockerStatus();
-    if (status !== 'ok') {
+    let status = runtimeStatus(bin);
+
+    // Rootless Podman has no daemon to start and no socket group to join, so
+    // the recovery paths below don't apply — a failure there is a real failure.
+    if (status !== 'ok' && !rootlessPodman) {
       status = await tryStartDocker();
     }
 
@@ -132,7 +144,7 @@ export async function run(args: string[]): Promise<void> {
     // does this on fresh installs, but skips when Docker is already present),
     // then re-exec under `sg docker` so the child picks up docker as its
     // primary group and can talk to /var/run/docker.sock without a logout.
-    if (status === 'no-permission' && getPlatform() === 'linux' && commandExists('sg')) {
+    if (status === 'no-permission' && !rootlessPodman && getPlatform() === 'linux' && commandExists('sg')) {
       // Ensure the current user is in the docker group — without this,
       // sg will ask for the (typically unset) group password and fail.
       const inGroup = spawnSync('id', ['-nG'], { encoding: 'utf-8' });
@@ -146,7 +158,7 @@ export async function run(args: string[]): Promise<void> {
       log.info('Re-executing container step under `sg docker`');
       const res = spawnSync(
         'sg',
-        ['docker', '-c', 'pnpm exec tsx setup/index.ts --step container'],
+        ['docker', '-c', `pnpm exec tsx setup/index.ts --step container --runtime ${bin}`],
         { cwd: projectRoot, stdio: 'inherit' },
       );
       process.exit(res.status ?? 1);
@@ -154,7 +166,9 @@ export async function run(args: string[]): Promise<void> {
 
     if (status !== 'ok') {
       const error =
-        status === 'no-permission' ? 'docker_group_not_active' : 'runtime_not_available';
+        status === 'no-permission' && !rootlessPodman
+          ? 'docker_group_not_active'
+          : 'runtime_not_available';
       emitStatus('SETUP_CONTAINER', {
         RUNTIME: runtime,
         IMAGE: image,
@@ -168,8 +182,8 @@ export async function run(args: string[]): Promise<void> {
     }
   }
 
-  const buildCmd = 'docker build';
-  const runCmd = 'docker';
+  const buildCmd = `${bin} build`;
+  const runCmd = bin;
 
   // Build-args from .env. Only INSTALL_CJK_FONTS is passed through today.
   // Keeps /setup and ./container/build.sh in sync — both read the same source.

@@ -16,6 +16,7 @@ import { readEnvFile } from '../src/env.js';
 import { log } from '../src/log.js';
 import { getLaunchdLabel, getSystemdUnit } from '../src/install-slug.js';
 import {
+  detectContainerRuntime,
   getPlatform,
   getServiceManager,
   hasSystemd,
@@ -125,13 +126,14 @@ export async function run(_args: string[]): Promise<void> {
 
   log.info('Service status', { service, runningFromPath });
 
-  // 2. Check container runtime
+  // 2. Check container runtime — whichever one this install is configured for.
   let containerRuntime = 'none';
   try {
-    execSync('docker info', { stdio: 'ignore' });
-    containerRuntime = 'docker';
+    const bin = detectContainerRuntime();
+    execSync(`${bin} info`, { stdio: 'ignore' });
+    containerRuntime = bin;
   } catch {
-    // Docker not running
+    // Runtime not installed or not running
   }
 
   // 3. Check credentials

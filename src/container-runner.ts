@@ -26,7 +26,15 @@ import {
 import { materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
-import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
+import {
+  CONTAINER_RUNTIME_BIN,
+  hostGatewayArgs,
+  isRootlessPodman,
+  readonlyMountArgs,
+  readwriteMountArgs,
+  stopContainer,
+  userNamespaceArgs,
+} from './container-runtime.js';
 import { EGRESS_NETWORK, egressNetworkArgs, ensureEgressNetwork } from './egress-lockdown.js';
 import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
@@ -500,10 +508,19 @@ async function buildContainerArgs(
     args.push(...hostGatewayArgs());
   }
 
+  // User-namespace mapping (rootless Podman only; no-op on Docker). Must come
+  // before --user so keep-id defines the namespace that --user resolves against.
+  args.push(...userNamespaceArgs());
+
   // User mapping
   const hostUid = process.getuid?.();
   const hostGid = process.getgid?.();
-  if (hostUid != null && hostUid !== 0 && hostUid !== 1000) {
+  // UID 1000 matches the image's `node` user, so Docker needs no --user. Under
+  // rootless Podman with keep-id the mapping is explicit, and omitting --user
+  // would leave the process at the namespace default rather than the host UID
+  // that owns the bind mounts.
+  const needsUserFlag = isRootlessPodman() ? hostUid != null : hostUid != null && hostUid !== 0 && hostUid !== 1000;
+  if (needsUserFlag) {
     args.push('--user', `${hostUid}:${hostGid}`);
     args.push('-e', 'HOME=/home/node');
   }
@@ -513,7 +530,7 @@ async function buildContainerArgs(
     if (mount.readonly) {
       args.push(...readonlyMountArgs(mount.hostPath, mount.containerPath));
     } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+      args.push(...readwriteMountArgs(mount.hostPath, mount.containerPath));
     }
   }
 

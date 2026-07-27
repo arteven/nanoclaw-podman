@@ -8,7 +8,7 @@ import path from 'path';
 import Database from 'better-sqlite3';
 
 import { log } from '../src/log.js';
-import { commandExists, getPlatform, isHeadless, isWSL } from './platform.js';
+import { commandExists, detectContainerRuntime, getPlatform, isHeadless, isWSL } from './platform.js';
 import { emitStatus } from './status.js';
 
 /**
@@ -110,12 +110,15 @@ export async function run(_args: string[]): Promise<void> {
   const wsl = isWSL();
   const headless = isHeadless();
 
-  // Check Docker
+  // Check the container runtime (Docker, or Podman when that's what's here).
+  // Reported under the DOCKER key for backwards compatibility with the /setup
+  // skill, with the actual runtime alongside it.
+  const containerRuntime = detectContainerRuntime();
   let docker: 'running' | 'installed_not_running' | 'not_found' = 'not_found';
-  if (commandExists('docker')) {
+  if (commandExists(containerRuntime)) {
     try {
       const { execSync } = await import('child_process');
-      execSync('docker info', { stdio: 'ignore' });
+      execSync(`${containerRuntime} info`, { stdio: 'ignore' });
       docker = 'running';
     } catch {
       docker = 'installed_not_running';
@@ -142,6 +145,7 @@ export async function run(_args: string[]): Promise<void> {
     {
       platform,
       wsl,
+      containerRuntime,
       docker,
       hasEnv,
       hasAuth,
@@ -155,6 +159,7 @@ export async function run(_args: string[]): Promise<void> {
     IS_WSL: wsl,
     IS_HEADLESS: headless,
     DOCKER: docker,
+    CONTAINER_RUNTIME: containerRuntime,
     HAS_ENV: hasEnv,
     HAS_AUTH: hasAuth,
     HAS_REGISTERED_GROUPS: hasRegisteredGroups,

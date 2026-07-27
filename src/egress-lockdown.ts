@@ -10,7 +10,7 @@
 import { execFileSync } from 'child_process';
 
 import { EGRESS_LOCKDOWN, EGRESS_NETWORK, ONECLI_GATEWAY_CONTAINER } from './config.js';
-import { CONTAINER_RUNTIME_BIN } from './container-runtime.js';
+import { CONTAINER_RUNTIME_BIN, isRootlessPodman } from './container-runtime.js';
 import { log } from './log.js';
 
 // Perimeter knobs (locked-down network, gateway container, on/off flag) are read
@@ -87,7 +87,55 @@ export function ensureEgressNetwork(): boolean {
   );
 }
 
-/** CLI args placing a container on the locked-down egress network. */
+/**
+ * The gateway's IP on the egress network, or null if it can't be determined.
+ *
+ * Only needed for rootless Podman — see egressNetworkArgs().
+ */
+function gatewayIp(): string | null {
+  try {
+    const out = execFileSync(
+      CONTAINER_RUNTIME_BIN,
+      [
+        'inspect',
+        ONECLI_GATEWAY_CONTAINER,
+        '--format',
+        `{{(index .NetworkSettings.Networks "${EGRESS_NETWORK}").IPAddress}}`,
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8', timeout: 15000 },
+    ).trim();
+    return /^[0-9a-fA-F.:]+$/.test(out) && out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * CLI args placing a container on the locked-down egress network.
+ *
+ * Docker resolves the `host.docker.internal` alias attached to the gateway via
+ * `network connect --alias`, so the network flag alone is enough.
+ *
+ * Podman's netavark DNS does not serve those aliases — it resolves container
+ * *names* only, whether the alias is set with `--network-alias` at run time or
+ * `network connect --alias` afterwards. The agent would resolve nothing and
+ * every API call through the injected HTTPS_PROXY would fail. Pin the name to
+ * the gateway's address on this network instead, which needs no DNS.
+ */
 export function egressNetworkArgs(): string[] {
-  return ['--network', EGRESS_NETWORK];
+  const args = ['--network', EGRESS_NETWORK];
+  if (!isRootlessPodman()) return args;
+
+  const ip = gatewayIp();
+  if (ip) {
+    args.push(`--add-host=host.docker.internal:${ip}`);
+  } else {
+    // Don't fail the spawn: the container still has no route off the egress
+    // network, so this degrades to "gateway unreachable", not "open egress".
+    log.warn('Egress lockdown: could not resolve gateway IP for host.docker.internal mapping', {
+      network: EGRESS_NETWORK,
+      gateway: ONECLI_GATEWAY_CONTAINER,
+    });
+  }
+  return args;
 }
