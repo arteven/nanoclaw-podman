@@ -19,7 +19,21 @@ cd "$SCRIPT_DIR"
 source "$PROJECT_ROOT/setup/lib/install-slug.sh"
 IMAGE_NAME="$(container_image_base)"
 TAG="${1:-latest}"
-CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
+# Accept CONTAINER_RUNTIME_BIN (what src/container-runtime.ts reads) so the
+# image is built by the same runtime that will later run it. CONTAINER_RUNTIME
+# stays supported for existing callers. With neither set, prefer whichever of
+# docker/podman is installed — a podman-only host builds without extra flags.
+if [ -n "${CONTAINER_RUNTIME_BIN:-}" ]; then
+    CONTAINER_RUNTIME="$CONTAINER_RUNTIME_BIN"
+elif [ -z "${CONTAINER_RUNTIME:-}" ]; then
+    if command -v docker >/dev/null 2>&1; then
+        CONTAINER_RUNTIME=docker
+    elif command -v podman >/dev/null 2>&1; then
+        CONTAINER_RUNTIME=podman
+    else
+        CONTAINER_RUNTIME=docker
+    fi
+fi
 
 # Caller's env takes precedence; fall back to .env.
 if [ -z "${INSTALL_CJK_FONTS:-}" ] && [ -f "../.env" ]; then

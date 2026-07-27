@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 
 import {
   getPlatform,
@@ -10,6 +10,8 @@ import {
   commandExists,
   getNodeVersion,
   getNodeMajorVersion,
+  detectContainerRuntime,
+  isRootlessPodmanRuntime,
 } from './platform.js';
 
 // --- getPlatform ---
@@ -116,5 +118,49 @@ describe('getNodeMajorVersion', () => {
     const major = getNodeMajorVersion();
     expect(major).not.toBeNull();
     expect(major!).toBeGreaterThanOrEqual(20);
+  });
+});
+
+// --- detectContainerRuntime ---
+
+describe('detectContainerRuntime', () => {
+  const original = process.env.CONTAINER_RUNTIME_BIN;
+  afterEach(() => {
+    if (original === undefined) delete process.env.CONTAINER_RUNTIME_BIN;
+    else process.env.CONTAINER_RUNTIME_BIN = original;
+  });
+
+  it('returns a supported runtime', () => {
+    delete process.env.CONTAINER_RUNTIME_BIN;
+    expect(['docker', 'podman']).toContain(detectContainerRuntime());
+  });
+
+  it('honors an explicit CONTAINER_RUNTIME_BIN, matching the host at run time', () => {
+    process.env.CONTAINER_RUNTIME_BIN = 'podman';
+    expect(detectContainerRuntime()).toBe('podman');
+    process.env.CONTAINER_RUNTIME_BIN = 'docker';
+    expect(detectContainerRuntime()).toBe('docker');
+  });
+
+  it('ignores an unsupported value rather than shelling out to it', () => {
+    process.env.CONTAINER_RUNTIME_BIN = 'definitely_not_a_runtime; rm -rf /';
+    expect(['docker', 'podman']).toContain(detectContainerRuntime());
+  });
+
+  it('prefers docker when both are installed, for backwards compatibility', () => {
+    delete process.env.CONTAINER_RUNTIME_BIN;
+    if (commandExists('docker')) expect(detectContainerRuntime()).toBe('docker');
+  });
+});
+
+// --- isRootlessPodmanRuntime ---
+
+describe('isRootlessPodmanRuntime', () => {
+  it('is always false for docker, which is never probed as podman', () => {
+    expect(isRootlessPodmanRuntime('docker')).toBe(false);
+  });
+
+  it('returns a boolean for podman without throwing when it is absent', () => {
+    expect(typeof isRootlessPodmanRuntime('podman')).toBe('boolean');
   });
 });
