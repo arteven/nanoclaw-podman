@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'NANOCLAW_EGRESS_LOCKDOWN',
   'NANOCLAW_EGRESS_NETWORK',
   'ONECLI_GATEWAY_CONTAINER',
+  'CONTAINER_RUNTIME_BIN',
 ]);
 
 /**
@@ -74,6 +75,11 @@ export const INSTALL_SLUG = getInstallSlug(PROJECT_ROOT);
 export const CONTAINER_INSTALL_LABEL = `nanoclaw-install=${INSTALL_SLUG}`;
 export const ONECLI_URL = process.env.ONECLI_URL || envConfig.ONECLI_URL;
 export const ONECLI_API_KEY = process.env.ONECLI_API_KEY || envConfig.ONECLI_API_KEY;
+// Container runtime binary. Only docker and podman are understood; anything
+// else falls back to docker rather than shelling out to an arbitrary name.
+const requestedRuntimeBin = (process.env.CONTAINER_RUNTIME_BIN || envConfig.CONTAINER_RUNTIME_BIN || '').trim();
+export const CONTAINER_RUNTIME_BIN_CONFIG =
+  requestedRuntimeBin === 'podman' || requestedRuntimeBin === 'docker' ? requestedRuntimeBin : 'docker';
 // Per-container resource caps, passed through to `docker run`. Default empty =
 // no flag added = today's unbounded behavior (don't OOM existing OSS workloads).
 // Operators opt in: CONTAINER_CPU_LIMIT=2, CONTAINER_MEMORY_LIMIT=8g.

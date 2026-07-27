@@ -11,6 +11,38 @@ Everything else is detected at runtime — the code probes
 then applies the adjustments below. On Docker (or rootful Podman) the
 generated `run` arguments are unchanged.
 
+## Installing
+
+Set `CONTAINER_RUNTIME_BIN=podman` in `.env` (or export it) before running
+setup, and the install picks Podman up throughout:
+
+```bash
+echo 'CONTAINER_RUNTIME_BIN=podman' >> .env
+./setup.sh
+```
+
+On a host where only Podman is installed, detection finds it without any
+configuration. When both runtimes are present Docker still wins by default, so
+existing installs keep their current behavior — set the variable to override.
+
+Individual steps take `--runtime podman` as well:
+
+```bash
+pnpm exec tsx setup/index.ts --step container --runtime podman
+```
+
+Two things setup does differently under rootless Podman:
+
+- `setup/install-docker.sh` is never invoked. Podman is expected to be
+  installed already (it is typically distro-packaged); setup will not install a
+  container runtime on your behalf.
+- The daemon-start and `docker` group recovery paths are skipped. Rootless
+  Podman has no daemon and no socket group, so there is nothing to start or
+  join — a failure at that point is reported rather than retried.
+
+You need `/etc/subuid` and `/etc/subgid` entries for your user (standard on
+distro Podman packages; `podman info` fails without them).
+
 ## Verifying your host
 
 ```bash

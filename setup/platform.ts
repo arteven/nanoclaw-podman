@@ -5,6 +5,8 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
+import { readEnvFile } from '../src/env.js';
+
 export type Platform = 'macos' | 'linux' | 'unknown';
 export type ServiceManager = 'launchd' | 'systemd' | 'none';
 
@@ -127,7 +129,11 @@ export type ContainerRuntime = 'docker' | 'podman';
  * — a bare `podman`-only host installs without extra flags.
  */
 export function detectContainerRuntime(): ContainerRuntime {
-  const explicit = process.env.CONTAINER_RUNTIME_BIN?.trim();
+  // process.env first, then .env — setup steps don't otherwise load .env, and
+  // an operator who put the variable there expects it to apply to the install.
+  const explicit = (
+    process.env.CONTAINER_RUNTIME_BIN ?? readEnvFile(['CONTAINER_RUNTIME_BIN']).CONTAINER_RUNTIME_BIN
+  )?.trim();
   if (explicit === 'docker' || explicit === 'podman') return explicit;
   if (commandExists('docker')) return 'docker';
   if (commandExists('podman')) return 'podman';
