@@ -50,6 +50,7 @@ export function isRootlessPodman(): boolean {
 /** Test seam: drop the memoized probe so a test can re-detect. */
 export function resetRuntimeProbe(): void {
   cachedRootlessPodman = null;
+  cachedSelinux = null;
 }
 
 /**
@@ -141,6 +142,39 @@ export function readwriteMountArgs(hostPath: string, containerPath: string): str
   return isRootlessPodman() && hasSelinux()
     ? ['-v', `${hostPath}:${containerPath}:z`]
     : ['-v', `${hostPath}:${containerPath}`];
+}
+
+/**
+ * Add the SELinux `:z` label to `-v` mounts already present in an argv.
+ *
+ * Needed for mounts we don't construct ourselves: the OneCLI SDK appends the CA
+ * bundle and credential stubs with a plain `-v host:container:ro`, so on an
+ * SELinux host the container is denied the very certificates it needs and every
+ * proxied API call fails TLS verification. We can't route those through
+ * readonlyMountArgs() — the SDK builds them internally — so relabel after the
+ * fact.
+ *
+ * Only touches entries that lack a label already, and is a no-op unless we're
+ * on rootless Podman with SELinux active, keeping Docker's argv unchanged.
+ */
+export function applySelinuxLabels(args: string[]): void {
+  if (!isRootlessPodman() || !hasSelinux()) return;
+
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] !== '-v') continue;
+    const spec = args[i + 1];
+    // A bind spec is host:container[:opts]; a Windows drive letter can't occur
+    // here, so counting colons is enough to find the options field.
+    const parts = spec.split(':');
+    if (parts.length < 2) continue;
+    if (parts.length === 2) {
+      args[i + 1] = `${spec}:z`;
+      continue;
+    }
+    const opts = parts[parts.length - 1].split(',');
+    if (opts.includes('z') || opts.includes('Z')) continue;
+    args[i + 1] = `${spec},z`;
+  }
 }
 
 /** Is SELinux enforcing/permissive on this host? Cached; false off Linux. */

@@ -35,6 +35,7 @@ import {
   resetRuntimeProbe,
   userNamespaceArgs,
   hostGatewayArgs,
+  applySelinuxLabels,
 } from './container-runtime.js';
 import { CONTAINER_INSTALL_LABEL, ONECLI_URL } from './config.js';
 import { log } from './log.js';
@@ -81,6 +82,60 @@ describe('readwriteMountArgs', () => {
   it('returns a plain -v flag on Docker, matching prior behavior', () => {
     probeReports('docker');
     expect(readwriteMountArgs('/h', '/c')).toEqual(['-v', '/h:/c']);
+  });
+});
+
+describe('applySelinuxLabels', () => {
+  /** Rootless Podman with SELinux enforcing — the case that needs relabeling. */
+  function probeReportsSelinuxPodman(): void {
+    mockExecSync.mockImplementation((cmd: unknown) => {
+      const c = String(cmd);
+      if (c.includes('Host.Security.Rootless')) return 'true\n';
+      if (c.includes('getenforce')) return 'Enforcing\n';
+      return '';
+    });
+  }
+
+  it('labels the OneCLI SDK readonly mounts that would otherwise be denied', () => {
+    probeReportsSelinuxPodman();
+    const args = ['-v', '/tmp/ca.pem:/etc/ca.pem:ro', '-e', 'FOO=bar'];
+    applySelinuxLabels(args);
+    expect(args).toEqual(['-v', '/tmp/ca.pem:/etc/ca.pem:ro,z', '-e', 'FOO=bar']);
+  });
+
+  it('labels an unsuffixed bind spec', () => {
+    probeReportsSelinuxPodman();
+    const args = ['-v', '/h:/c'];
+    applySelinuxLabels(args);
+    expect(args).toEqual(['-v', '/h:/c:z']);
+  });
+
+  it('leaves already-labeled mounts alone so the label is not duplicated', () => {
+    probeReportsSelinuxPodman();
+    const args = ['-v', '/h:/c:ro,z', '-v', '/i:/d:Z'];
+    applySelinuxLabels(args);
+    expect(args).toEqual(['-v', '/h:/c:ro,z', '-v', '/i:/d:Z']);
+  });
+
+  it('is a no-op on Docker, keeping its argv byte-for-byte unchanged', () => {
+    probeReports('docker');
+    const args = ['-v', '/tmp/ca.pem:/etc/ca.pem:ro'];
+    applySelinuxLabels(args);
+    expect(args).toEqual(['-v', '/tmp/ca.pem:/etc/ca.pem:ro']);
+  });
+
+  it('is a no-op on rootless Podman without SELinux', () => {
+    probeReports('rootless-podman');
+    const args = ['-v', '/tmp/ca.pem:/etc/ca.pem:ro'];
+    applySelinuxLabels(args);
+    expect(args).toEqual(['-v', '/tmp/ca.pem:/etc/ca.pem:ro']);
+  });
+
+  it('ignores a trailing bare -v with no spec after it', () => {
+    probeReportsSelinuxPodman();
+    const args = ['-e', 'FOO=bar', '-v'];
+    applySelinuxLabels(args);
+    expect(args).toEqual(['-e', 'FOO=bar', '-v']);
   });
 });
 

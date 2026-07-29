@@ -24,6 +24,7 @@ import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
 import {
   CONTAINER_RUNTIME_BIN,
+  applySelinuxLabels,
   hostGatewayArgs,
   isRootlessPodman,
   readonlyMountArgs,
@@ -504,6 +505,9 @@ async function buildContainerArgs(
   if (!onecliApplied) {
     throw new Error('OneCLI gateway not applied — refusing to spawn container without credentials');
   }
+  // The SDK appends its CA bundle and credential stubs as unlabeled `-v` mounts,
+  // which SELinux denies. Relabel them here (no-op off rootless Podman/SELinux).
+  applySelinuxLabels(args);
   log.info('OneCLI gateway applied', { containerName });
 
   // Override entrypoint: run v2 entry point directly via Bun (no tsc, no stdin).

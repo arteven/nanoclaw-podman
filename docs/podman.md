@@ -123,6 +123,14 @@ On Fedora/RHEL (where Podman is the default runtime) an unlabeled bind mount is
 denied inside the container. When `getenforce` reports `Enforcing` or
 `Permissive`, mounts get the `:z` shared-category label.
 
+This covers the mounts we build ourselves. The OneCLI SDK also appends mounts of
+its own — the CA bundle, the combined cert bundle, and any credential stubs —
+using a plain `-v host:container:ro` we don't construct. Left unlabeled, the
+container is denied the very certificates it proxies through, so every API call
+fails TLS verification. `applySelinuxLabels()` rewrites those specs in the argv
+after `applyContainerConfig()` returns, skipping any that already carry `:z`/`:Z`
+and doing nothing at all off rootless-Podman-with-SELinux.
+
 ## Known gaps
 
 - Only rootless Podman on Linux is exercised. `podman machine` on macOS is
